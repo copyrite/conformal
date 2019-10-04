@@ -1,0 +1,178 @@
+<meta charset="utf-8">
+<html>
+    <head>
+        <title>Interactive conformal map demo</title>
+    </head>
+    <body>
+    
+        
+        <div id="ui" style="display:grid; max-width: 20vw;">
+        <input type="button" id="about" value="About" onclick="alert('Interactive conformal map demo\n\Tatu Leinonen\nSee also https://arxiv.org/abs/math/0605532v1')">
+        <textarea id="txt" rows=10 cols=20></textarea>
+        <input type="button" id="parse" value="Parse" onclick="compute(); render();">
+        </div>
+        <canvas width="800" height="800" style="position:absolute; left:0; top:0; z-index:-1;">
+        </canvas>
+
+        <script src="https://unpkg.com/mathjs@6.1.0/dist/math.js"></script>
+        <script src="https://d3js.org/d3.v5.min.js"></script>
+        <script src="./conformal.js"></script>
+        <script>
+        
+            planeCtr = Object({x: 0, y: 0})
+            scale = 1;
+            
+            viewx = x => 0.5*width  + scale*(x - planeCtr.x)
+            viewy = y => 0.5*height - scale*(y - planeCtr.y)
+
+            posx = x => (x -  0.5*width) / scale + planeCtr.x;
+            posy = y => (0.5*height - y) / scale + planeCtr.y;
+            
+            scatterplot_radius = 1.75
+            handle_radius = 4.25;
+            
+            function parse(input){
+                /* TODO:
+                    - Security concerns in math.evaluate?
+                    - Error handling?
+                    - Allow non-bracketed number lists?
+                    - MATLAB formats?
+                */
+                return math.complex(math.matrix(math.evaluate(input)));
+            }
+                
+            function render(){
+                context.clearRect(0, 0, width, height);
+                
+                context.beginPath();
+                var z = math.evaluate("pgon[1]", {pgon: pgon});
+                context.moveTo(viewx(z.re), viewy(z.im));
+                math.evaluate("pgon[2:end]", {pgon: pgon}).forEach(function (z) { context.lineTo(viewx(z.re), viewy(z.im)); })
+                context.closePath();
+                
+                context.fillStyle="lightgray";
+                context.fill();
+                context.lineWidth = 2;
+                context.strokeStyle = "red";
+                context.stroke();
+                
+                grid.forEach(function (z){
+                    context.beginPath();
+                    context.moveTo(viewx(z.re) + scatterplot_radius, viewy(z.im));
+                    context.arc(viewx(z.re), viewy(z.im), scatterplot_radius, 0, 2*math.pi);
+                    context.fillStyle = "blue"
+                    context.fill()
+                    });
+
+                context.beginPath();
+                context.moveTo(viewx(ctr.re) + handle_radius, viewy(ctr.im));
+                context.arc(viewx(ctr.re), viewy(ctr.im), handle_radius, 0, 2*math.pi)
+                context.fillStyle = "teal"
+                context.fill()
+            }
+            
+            function compute(){
+                pgon = parse(txt.value)
+                txt.value = String(pgon)
+
+                zeta = math.evaluate("concat(v, [v[1]])", {v: pgon})
+                n = math.squeeze(zeta.size())
+                
+                
+                planeCtr.x = 0.5*(math.min(math.re(pgon)) + math.max(math.re(pgon)))
+                planeCtr.y = 0.5*(math.min(math.im(pgon)) + math.max(math.im(pgon)))
+
+                viewx = x => 0.5*width  + scale*(x - planeCtr.x)
+                viewy = y => 0.5*height - scale*(y - planeCtr.y)
+
+                posx = x => (x -  0.5*width) / scale + planeCtr.x;
+                posy = y => (0.5*height - y) / scale + planeCtr.y;
+
+                scale = 0.85*math.min(width/(math.max(math.re(pgon)) - math.min(math.re(pgon))), height/(math.max(math.im(pgon)) - math.min(math.im(pgon))))
+                
+                
+                // First parameter
+                math.evaluate("v[3:end] = fn(v[3:end], v[1], v[2])", {v: zeta, fn: geod_fwd_phi_1})
+                
+                // i-th parameters
+                for (var i=3; i < n; ++i){
+                    math.evaluate("v[" + String(i+1) + ":end] = fn(v[" + String(i+1) + ":end], v[" + String(i) + "])", {v: zeta, fn: geod_fwd_phi_i})
+                }
+                
+                ctr = math.evaluate("0.5+0.5i") // TODO: Implement some other heuristic for initial center
+                tgt = math.squeeze(geod_fwd([ctr], zeta))
+                
+                gridDraggable = Object({x: viewx(ctr.re), y: viewy(ctr.im)})
+                <!-- planeDraggable = Object({x: 0, y: 0}) -->
+                
+                grid = math.evaluate("concat(3/4 * exp(2 pi i*(0:3)/4), 7/8 * exp(2 pi i*(0:7)/8), 15/16 * exp(2 pi i*(0:15)/16))")
+                grid = math.evaluate("fn(v, tgt)", {v: grid, tgt: tgt, fn: udisk2uhp})
+                grid = geod_inv(grid, zeta)
+                
+            }
+            
+            
+            function onloadfn(){
+                pgon = math.evaluate("[0, 1, 1+1i, 1i]")
+                pgon = densify(pgon, 8);
+            
+                txt = document.querySelector("textarea");
+                txt.value = String(pgon)
+                
+                canvas = document.querySelector("canvas");
+                context = canvas.getContext("2d");
+                                
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+                width = canvas.width;
+                height = canvas.height;
+
+                /* TODO: Event's coordinates are coming off the whole window, not the canvas. Fix should be applied somewhere here, probably.
+                 */
+                drag = draggables => {
+                    function dragsubject(){
+                        return gridDraggable
+                    }
+                    
+                    function dragstarted(){
+                        
+                    }
+                    
+                    function dragged(){
+                        d3.event.subject.x = d3.event.x;
+                        d3.event.subject.y = d3.event.y;
+                        
+                        ctr = math.complex(posx(d3.event.subject.x), posy(d3.event.subject.y))
+                        
+                    }
+                    
+                    function dragended(){
+                        tgt = math.squeeze(geod_fwd([ctr], zeta))
+                        grid = math.evaluate("concat(3/4 * exp(2 pi i*(0:3)/4), 7/8 * exp(2 pi i*(0:7)/8), 15/16 * exp(2 pi i*(0:15)/16))")
+                        grid = math.evaluate("fn(v, tgt)", {v: grid, tgt: tgt, fn: udisk2uhp})
+                        grid = geod_inv(grid, zeta)
+                    }
+                    
+                    function container(){
+                        return this;
+                    }
+                    
+                    return d3.drag()
+                        .subject(dragsubject)
+                        .on("start", dragstarted)
+                        .on("drag", dragged)
+                        .on("end", dragended)
+                }
+                
+                compute();
+                txt.value = String(pgon)
+                d3.select(canvas).call(drag().on("start.render drag.render end.render", render))
+                render();
+                
+            }
+
+            window.onload = onloadfn;
+
+        </script>
+    </body>
+</html>
